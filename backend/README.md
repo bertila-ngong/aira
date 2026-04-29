@@ -31,9 +31,10 @@ aira/
 - PostgreSQL 14+ running locally
 - Google Cloud project with Gemini API enabled
 
-### Installation
+### Installation 
 
-```bash
+
+``bash
 cd backend
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
