@@ -17,10 +17,8 @@ export function useWebSocket(onMessage: MessageHandler) {
 
     setStatus('connecting')
 
-    // Use the proxy path - Vite will forward this to ws://localhost:8000
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const backendHost = (import.meta.env.VITE_WS_URL || '').replace(/^wss?:\/\//, '') || window.location.host
-    const wsUrl = `${wsProtocol}//${backendHost}/api/v1/voice/stream?token=${token}`
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+    const wsUrl = apiUrl.replace(/^http/, 'ws') + `/api/v1/voice/stream?token=${token}`
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
