@@ -31,7 +31,9 @@ export function GestureScroll() {
   // ── WebSocket ──────────────────────────────────────────────────────────
   const connectWs = useCallback(() => {
     if (!token) return
-    const ws = new WebSocket(`${import.meta.env.VITE_WS_URL}/api/v1/gesture-scroll/ws?token=${token}`)
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+    const wsUrl = apiUrl.replace(/^http/, 'ws') + `/api/v1/gesture-scroll/ws?token=${token}`
+    const ws = new WebSocket(wsUrl)
     ws.onopen    = () => { setWsReady(true) }
     ws.onclose   = () => { setWsReady(false); if (activeRef.current) setTimeout(connectWs, 1500) }
     ws.onerror   = () => setError('Backend WebSocket error')
