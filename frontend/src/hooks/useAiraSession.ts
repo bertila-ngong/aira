@@ -101,7 +101,12 @@ export function useAiraSession() {
       }
     }
     else if (type === 'goal_plan') {
-      setCurrentGoal(message.plan as never)
+      const plan = message.plan as any
+      setCurrentGoal(plan)
+      // Open the URL in the user's browser tab if backend provided one
+      if (plan?.open_url) {
+        window.open(plan.open_url, '_blank')
+      }
     }
     else if (type === 'screen_analyzed') {
       setLastScreenDescription(message.description as string)
