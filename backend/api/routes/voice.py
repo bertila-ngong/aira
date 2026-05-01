@@ -24,7 +24,7 @@ logger = logging.getLogger("aira.voice_route")
 router = APIRouter(prefix="/voice", tags=["Voice"])
 
 _last_executed_queries: dict[str, float] = {}
-LAST_ACTION_COOLDOWN_SEC = 10  # Reduced from 90s — was silently dropping repeated requests
+LAST_ACTION_COOLDOWN_SEC = 90
 
 _desktop_agent = DesktopAgent()
 
@@ -40,51 +40,23 @@ async def get_user_from_token(token: str, db: AsyncSession):
     return result.scalar_one_or_none()
 
 
-def extract_search_query(user_text: str, aira_text: str) -> str | None:
-    """
-    Try to extract the search query from user_text first (most reliable),
-    then fall back to parsing aira_text.
-    """
-    # 1. Try user text directly — strip filler phrases
-    if user_text:
-        t = user_text.strip()
-        filler = re.compile(
-            r'^(?:hey aira[,\s]*|aira[,\s]*|can you[,\s]*|could you[,\s]*|please[,\s]*|'
-            r'i want you to[,\s]*|i\'d like you to[,\s]*)',
-            re.IGNORECASE
-        )
-        t = filler.sub('', t).strip()
-        action_prefix = re.compile(
-            r'^(?:search(?:\s+(?:google|the\s+web|online))?\s+for\s+|'
-            r'look\s+up\s+|find\s+(?:info(?:rmation)?\s+(?:on|about)\s+)?|'
-            r'google\s+|search\s+|can\s+you\s+search\s+for\s+|'
-            r'open\s+(?:up\s+)?|go\s+to\s+|navigate\s+to\s+|'
-            r'browse\s+(?:to\s+)?|pull\s+up\s+)',
-            re.IGNORECASE
-        )
-        cleaned = action_prefix.sub('', t).strip().strip('"\'.,?!')
-        if len(cleaned) > 2 and len(cleaned) < 200:
-            return cleaned
-
-    # 2. Fall back to quoted strings in aira_text
-    if aira_text:
-        quoted = re.findall(r'"([^"]{3,})"', aira_text)
-        if quoted:
-            return quoted[0]
-
-        patterns = [
-            r'search(?:ing)?\s+(?:google\s+)?for\s+"?(.+?)"?(?:\.|,|$)',
-            r'look(?:ing)?\s+up\s+"?(.+?)"?(?:\.|,|$)',
-            r'find(?:ing)?\s+(?:information\s+(?:on|about)\s+)?"?(.+?)"?(?:\.|,|$)',
-            r'(?:open|opening|navigate|navigating)\s+(?:to\s+)?"?(.+?)"?(?:\.|,|$)',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, aira_text.lower())
-            if match:
-                query = match.group(1).strip().strip('"\'')
-                if len(query) > 3:
-                    return query
-
+def extract_search_query(aira_text: str) -> str | None:
+    quoted = re.findall(r'"([^"]+)"', aira_text)
+    if quoted:
+        return quoted[0]
+    patterns = [
+        r'search(?:ing)?\s+(?:google\s+)?for\s+(.+?)(?:\.|,|$)',
+        r'look(?:ing)?\s+up\s+(.+?)(?:\.|,|$)',
+        r'find(?:ing)?\s+(?:information\s+(?:on|about)\s+)?(.+?)(?:\.|,|$)',
+        r'(?:open|opening|navigate|navigating)\s+(?:to\s+)?(.+?)(?:\.|,|$)',
+        r'query[:\s]+(.+?)(?:\.|,|$)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, aira_text.lower())
+        if match:
+            query = match.group(1).strip().strip('"\'')
+            if len(query) > 3:
+                return query
     return None
 
 
@@ -118,54 +90,31 @@ def extract_url(aira_text: str) -> str | None:
 
 
 def classify_command(user_text: str, aira_text: str) -> str:
-    """
-    Returns: 'music' | 'app' | 'browser' | 'none'
-
-    Priority: check user_text first (intent is clearest there),
-    then use aira_text as confirmation.
-    """
+    """Returns: 'music' | 'app' | 'browser' | 'none'"""
     combined = (user_text + " " + aira_text).lower()
-    user_lower = user_text.lower()
 
     music_platform = _desktop_agent.detect_music_platform(combined)
     app_key = _desktop_agent.detect_app(combined)
 
-    has_play = "play" in user_lower
-    has_music_word = any(w in user_lower for w in ["song", "music", "track", "album", "artist"])
-
-    has_launch = any(w in user_lower for w in ["open", "launch", "start", "run"])
-
-    # Expanded browser keywords — check user_text primarily
-    browser_keywords = [
-        "search", "google", "look up", "look it up", "find", "navigate",
-        "browse", "website", "url", "go to", "open youtube", "youtube",
-        "what is", "what are", "who is", "how to", "how do", "tell me about",
-        "show me", "research", "check", "i want to know", "can you find",
-        "pull up", "bring up",
-    ]
-    has_browser_word = any(w in user_lower for w in browser_keywords)
+    has_play = "play" in combined
+    has_music_word = any(w in combined for w in ["song", "music", "track", "album", "artist"])
+    has_launch = any(w in combined for w in ["open", "launch", "start", "run"])
+    has_browser_word = any(w in combined for w in [
+        "search", "google", "look up", "find", "navigate", "browse", "website", "url",
+        "going to", "i'll search", "let me search", "searching", "pulling up", "loading"
+    ])
 
     # Music: play intent + platform or music keyword
-    if has_play and (music_platform or has_music_word):
-        return "music"
-    if music_platform and has_play:
-        return "music"
+    if (has_play or music_platform) and (music_platform or has_music_word or has_play):
+        if has_play or music_platform:
+            return "music"
 
-    # App launch: launch keyword + known app
-    if app_key and has_launch and not has_browser_word:
+    # App launch: launch keyword + known app (that isn't a browser URL)
+    if app_key and has_launch and "." not in combined.split(app_key)[0][-10:]:
         return "app"
 
-    # Browser: search/navigation intent in user text
+    # Browser: search/navigation intent
     if has_browser_word:
-        return "browser"
-
-    # Final fallback: check aira_text for browser intent signals
-    aira_browser_signals = [
-        "i'll search", "let me search", "searching", "pulling up",
-        "loading", "i'm opening", "navigating to", "looking up",
-        "i found", "here are the results", "according to",
-    ]
-    if any(s in aira_text.lower() for s in aira_browser_signals):
         return "browser"
 
     return "none"
@@ -234,15 +183,12 @@ async def voice_stream(
 
         user_text = last_user_message[0]
         action_type = classify_command(user_text, full_text)
-        logger.info(
-            f"Command classified as: {action_type} | "
-            f"user='{user_text[:80]}' | aira='{full_text[:80]}'"
-        )
+        logger.info(f"Command classified as: {action_type} | user='{user_text[:60]}' | aira='{full_text[:60]}'")
 
         if action_type == "none":
             return
 
-        action_key = user_text.strip().lower()[:80] or full_text[:60]
+        action_key = user_text.strip().lower() or full_text[:60]
         now = time.time()
         if now - _last_executed_queries.get(action_key, 0) < LAST_ACTION_COOLDOWN_SEC:
             logger.info(f"Cooldown active — skipping '{action_key}'")
@@ -259,6 +205,7 @@ async def voice_stream(
         try:
             if action_type == "music":
                 platform = _desktop_agent.detect_music_platform(combined) or "youtube"
+                # Use user_text only — if empty, extract short quoted phrase from full_text
                 music_query = extract_music_query(user_text) or user_text.strip()
                 if not music_query or len(music_query) > 100:
                     quoted = re.findall(r'"([^"]{2,60})"', full_text)
@@ -270,12 +217,9 @@ async def voice_stream(
                     return
                 logger.info(f"Music: platform={platform} query={music_query}")
 
+                # Detect if user specified a browser
                 browser_pref = "chrome"
-                for b, keywords in [
-                    ("chrome", ["google chrome", "chrome"]),
-                    ("firefox", ["firefox"]),
-                    ("edge", ["edge", "microsoft edge"]),
-                ]:
+                for b, keywords in [("chrome", ["google chrome", "chrome"]), ("firefox", ["firefox"]), ("edge", ["edge", "microsoft edge"])]:
                     if any(k in combined for k in keywords):
                         browser_pref = b
                         break
@@ -308,25 +252,25 @@ async def voice_stream(
                         },
                     })
                 else:
-                    logger.error(f"Music action failed: {result.get('error')}")
                     browser_action_fired[0] = False
                     _last_executed_queries.pop(action_key, None)
 
+          
             elif action_type == "app":
-                app_key_name = _desktop_agent.detect_app(combined)
-                logger.info(f"App launch: {app_key_name}")
-                result = await _desktop_agent.launch_app(app_key_name)
+                app_key = _desktop_agent.detect_app(combined)
+                logger.info(f"App launch: {app_key}")
+                result = await _desktop_agent.launch_app(app_key)
                 if result.get("success"):
                     await websocket.send_json({
                         "type": "goal_plan",
                         "plan": {
-                            "goal_summary": f"Launching {app_key_name}",
+                            "goal_summary": f"Launching {app_key}",
                             "requires_confirmation": False,
                             "steps": [{
                                 "step": 1,
-                                "action": f"Launched {app_key_name}",
+                                "action": f"Launched {app_key}",
                                 "type": "app_launch",
-                                "details": app_key_name,
+                                "details": app_key,
                                 "status": "completed",
                             }],
                         },
@@ -335,22 +279,17 @@ async def voice_stream(
                     browser_action_fired[0] = False
                     _last_executed_queries.pop(action_key, None)
 
+          
             elif action_type == "browser":
-                # Pass user_text into extract_search_query for better accuracy
-                query = extract_search_query(user_text, full_text)
-                url = extract_url(full_text) or extract_url(user_text)
-                logger.info(f"Browser: query={query!r} url={url!r}")
+                query = extract_search_query(full_text)
+                url = extract_url(full_text)
+                logger.info(f"Browser: query={query} url={url}")
 
                 browser_pref = "chrome"
-                for b, keywords in [
-                    ("chrome", ["google chrome", "chrome"]),
-                    ("firefox", ["firefox"]),
-                    ("edge", ["edge", "microsoft edge"]),
-                ]:
+                for b, keywords in [("chrome", ["google chrome", "chrome"]), ("firefox", ["firefox"]), ("edge", ["edge", "microsoft edge"])]:
                     if any(k in combined for k in keywords):
                         browser_pref = b
                         break
-
                 if not browser.is_running:
                     await browser.start(browser=browser_pref)
                     await asyncio.sleep(2)
@@ -362,7 +301,6 @@ async def voice_stream(
                 elif query:
                     result = await browser.search_google(query)
                 else:
-                    # Last resort: search whatever the user said
                     result = await browser.search_google(user_text)
 
                 if result.get("success"):
@@ -381,12 +319,11 @@ async def voice_stream(
                         },
                     })
                 else:
-                    logger.error(f"Browser action failed: {result.get('error')}")
                     browser_action_fired[0] = False
                     _last_executed_queries.pop(action_key, None)
 
         except Exception as e:
-            logger.error(f"Action failed [{action_type}]: {e}", exc_info=True)
+            logger.error(f"Action failed [{action_type}]: {e}")
             browser_action_fired[0] = False
             _last_executed_queries.pop(action_key, None)
 
