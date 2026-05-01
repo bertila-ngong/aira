@@ -34,7 +34,7 @@ Speak naturally. AIRA understands intent, executes multi-step tasks, and remembe
 
 ![AIRA System Architecture](docs/architecture.png)
 
-AIRA has four layers. The **React frontend** captures microphone audio and streams it over a persistent WebSocket. The **FastAPI backend** classifies the voice intent and routes it to the correct agent — `browser_agent.py` for web tasks or `desktop_agent.py` for app control. **Gemini Live API** handles the bidirectional audio conversation. **PostgreSQL** stores users, session transcripts, and memories.
+AIRA has four layers. The **React frontend** captures microphone audio and streams it over a persistent WebSocket. The **FastAPI backend** classifies the voice intent and directs it to the correct agent — `browser_agent.py` for web tasks or `desktop_agent.py` for app control. **Gemini Live API** handles the bidirectional audio conversation. **PostgreSQL** stores users, session transcripts, and memories.
 
 ---
 
